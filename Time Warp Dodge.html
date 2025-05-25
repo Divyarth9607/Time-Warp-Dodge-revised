@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Time Warp Dodge</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-family: Arial, sans-serif;
+      color: white;
+      background: #111;
+    }
+    canvas {
+      display: block;
+      background: #222;
+      pointer-events: none;
+    }
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      text-align: center;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 10;
+    }
+    #startScreen, #gameOverScreen, #waveScreen {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      background: rgba(0, 0, 0, 0.8);
+      padding: 20px;
+      border-radius: 10px;
+      color: white;
+      z-index: 20;
+    }
+    #startScreen button, #gameOverScreen button {
+      padding: 10px 20px;
+      font-size: 18px;
+      cursor: pointer;
+      background: #0ff;
+      border: none;
+      border-radius: 5px;
+      color: black;
+    }
+    #startScreen button:hover, #gameOverScreen button:hover {
+      background: #0cc;
+    }
+    #waveScreen {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="ui">
+    <p>Score: <span id="score">0</span></p>
+    <p>Wave: <span id="wave">1</span></p>
+    <p>Time Meter: <span id="timeMeter">100</span></p>
+    <p>WASD to move, Left-click to shoot (0.5s delay), Space to slow drones (invincible), Right-click for shockwave (costs 500)</p>
+  </div>
+  <div id="startScreen">
+    <h1>Time Warp Dodge</h1>
+    <p>WASD: Move<br>Left-click: Shoot laser (0.5s delay)<br>Space: Slow-motion (invincible)<br>Right-click: Shockwave (costs 500 time meter)<br>Clear waves of drones to advance!</p>
+    <button id="startButton">Start</button>
+  </div>
+  <div id="gameOverScreen" style="display: none;">
+    <h1>Game Over!</h1>
+    <p>Score: <span id="finalScore">0</span></p>
+    <p>Wave: <span id="finalWave">1</span></p>
+    <button id="restartButton">Restart</button>
+  </div>
+  <div id="waveScreen">
+    <h1>Wave <span id="waveNumber">1</span></h1>
+  </div>
+  <script>
+    // Game state and variables
+    let gameState = 'start';
+    let player = null;
+    let drones = [];
+    let lasers = [];
+    let explosions = [];
+    let shockwave = null;
+    let score = 0;
+    let wave = 1;
+    let timeMeter = 100;
+    let isSlowMotion = false;
+    let lastTime = performance.now();
+    let lastShot = 0;
+    let lastSpawn = 0;
+    let waveTransitionTime = 0;
+    let canvas, ctx, scoreDisplay, waveDisplay, timeMeterDisplay, startScreen, gameOverScreen, waveScreen, waveNumberDisplay, finalScoreDisplay, finalWaveDisplay, startButton, restartButton;
+
+    // Start/restart game
+    function startGame() {
+      console.log('Start/Restart button clicked');
+      resetGame();
+      gameState = 'waveTransition';
+      startScreen.style.display = 'none';
+      gameOverScreen.style.display = 'none';
+      canvas.style.pointerEvents = 'auto';
+      spawnWave();
+    }
+
+    // Reset game
+    function resetGame() {
+      player = { x: canvas.width / 2, y: canvas.height / 2, radius: 10, speed: 200, direction: 'none' };
+      drones = [];
+      lasers = [];
+      explosions = [];
+      shockwave = null;
+      score = 0;
+      wave = 1;
+      timeMeter = 100;
+      isSlowMotion = false;
+      lastShot = performance.now();
+      lastSpawn = performance.now();
+      lastTime = performance.now();
+      waveTransitionTime = 0;
+      keys = {};
+      mouse = { left: false, right: false };
+      waveDisplay.textContent = wave;
+    }
+
+    // Set canvas to fullscreen
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      player.x = canvas.width / 2;
+      player.y = canvas.height / 2;
+    }
+
+    // Scale factor based on original 600x400 resolution
+    function getScale() {
+      return Math.min(canvas.width / 600, canvas.height / 400);
+    }
+
+    // Drone class
+    class Drone {
+      constructor() {
+        const edge = Math.floor(Math.random() * 4);
+        if (edge === 0) {
+          this.x = Math.random() * canvas.width;
+          this.y = 0;
+        } else if (edge === 1) {
+          this.x = canvas.width;
+          this.y = Math.random() * canvas.height;
+        } else if (edge === 2) {
+          this.x = Math.random() * canvas.width;
+          this.y = canvas.height;
+        } else {
+          this.x = 0;
+          this.y = Math.random() * canvas.height;
+        }
+        this.speed = 100 * Math.pow(1.1, wave - 1);
+        this.size = 15;
+      }
+      update(deltaTime, slowFactor) {
+        const dx = player.x - this.x;
+        const dy = player.y - this.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance > 0) {
+          const speed = isSlowMotion ? this.speed * 1.2 * slowFactor : this.speed;
+          this.x += (dx / distance) * speed * deltaTime * getScale();
+          this.y += (dy / distance) * speed * deltaTime * getScale();
+        }
+      }
+      draw() {
+        const scale = getScale();
+        ctx.fillStyle = 'red';
+        ctx.beginPath();
+        ctx.moveTo(this.x, this.y - this.size * scale);
+        ctx.lineTo(this.x + this.size * scale, this.y + this.size * scale);
+        ctx.lineTo(this.x - this.size * scale, this.y + this.size * scale);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // Laser class
+    class Laser {
+      constructor(x, y, dx, dy) {
+        this.x = x;
+        this.y = y;
+        this.dx = dx;
+        this.dy = dy;
+        this.speed = 400;
+        this.width = 10;
+        this.height = 4;
+      }
+      update(deltaTime) {
+        this.x += this.dx * this.speed * deltaTime * getScale();
+        this.y += this.dy * this.speed * deltaTime * getScale();
+        if (this.x < 0 || this.x > canvas.width || this.y < 0 || this.y > canvas.height) {
+          return true;
+        }
+        return false;
+      }
+      draw() {
+        const scale = getScale();
+        ctx.fillStyle = 'green';
+        ctx.fillRect(this.x - (this.width * scale) / 2, this.y - (this.height * scale) / 2, this.width * scale, this.height * scale);
+      }
+    }
+
+    // Explosion class
+    class Explosion {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.radius = 0;
+        this.maxRadius = 30;
+        this.duration = 0.5;
+        this.time = 0;
+      }
+      update(deltaTime) {
+        this.time += deltaTime;
+        this.radius = (this.time / this.duration) * this.maxRadius;
+        return this.time >= this.duration;
+      }
+      draw() {
+        const scale = getScale();
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius * scale, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, ${255 - (this.time / this.duration) * 100}, 0, 0.7)`;
+        ctx.fill();
+      }
+    }
+
+    // Shockwave class
+    class Shockwave {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.radius = 0;
+        this.maxRadius = 150;
+        this.duration = 0.5;
+        this.time = 0;
+      }
+      update(deltaTime) {
+        this.time += deltaTime;
+        this.radius = (this.time / this.duration) * this.maxRadius;
+        return this.time >= this.duration;
+      }
+      draw() {
+        const scale = getScale();
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius * scale, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(0, 255, 255, ${1 - this.time / this.duration})`;
+        ctx.lineWidth = 3 * scale;
+        ctx.stroke();
+      }
+    }
+
+    // Spawn wave with announcement
+    function spawnWave() {
+      console.log('Spawning wave', wave);
+      player.x = canvas.width / 2;
+      player.y = canvas.height / 2;
+      drones = [];
+      lasers = [];
+      explosions = [];
+      shockwave = null;
+      waveNumberDisplay.textContent = wave;
+      waveScreen.style.display = 'block';
+      gameState = 'waveTransition';
+      setTimeout(() => {
+        waveScreen.style.display = 'none';
+        gameState = 'playing';
+        console.log('Wave screen hidden, state changed to playing');
+        const droneCount = wave * 2;
+        for (let i = 0; i < droneCount; i++) {
+          drones.push(new Drone());
+        }
+        console.log('Spawned initial', droneCount, 'drones for wave', wave);
+        lastSpawn = performance.now();
+        requestAnimationFrame(gameLoop);
+      }, 1000);
+    }
+
+    // Spawn additional drones during wave
+    function spawnDrone() {
+      const now = performance.now();
+      const spawnInterval = 1500 * Math.pow(0.95, wave - 1);
+      if (now - lastSpawn > spawnInterval) {
+        drones.push(new Drone());
+        lastSpawn = now;
+        console.log('Spawned single drone, total drones:', drones.length);
+      }
+    }
+
+    // Fire laser
+    function fireLaser() {
+      const now = performance.now();
+      if (!mouse.left || now - lastShot < 500) return;
+      lastShot = now;
+      let dx = 0, dy = 0;
+      switch (player.direction) {
+        case 'up': dy = -1; break;
+        case 'down': dy = 1; break;
+        case 'left': dx = -1; break;
+        case 'right': dx = 1; break;
+        default: return;
+      }
+      lasers.push(new Laser(player.x, player.y, dx, dy));
+    }
+
+    // Fire shockwave
+    function fireShockwave() {
+      if (mouse.right && timeMeter >= 500 && !shockwave) {
+        shockwave = new Shockwave(player.x, player.y);
+        timeMeter -= 500;
+        mouse.right = false;
+      }
+    }
+
+    // Check collisions
+    function checkCollisions() {
+      if (!isSlowMotion) {
+        for (let i = 0; i < drones.length; i++) {
+          const drone = drones[i];
+          const dx = player.x - drone.x;
+          const dy = player.y - drone.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          if (distance < (player.radius + drone.size) * getScale()) {
+            gameState = 'gameOver';
+            finalScoreDisplay.textContent = Math.floor(score);
+            finalWaveDisplay.textContent = wave;
+            gameOverScreen.style.display = 'block';
+            canvas.style.pointerEvents = 'none';
+          }
+        }
+      }
+
+      const lasersToRemove = [];
+      const dronesToRemove = [];
+      for (let i = 0; i < lasers.length; i++) {
+        for (let j = 0; j < drones.length; j++) {
+          const laser = lasers[i];
+          const drone = drones[j];
+          const dx = laser.x - drone.x;
+          const dy = laser.y - drone.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          if (distance < (laser.width / 2 + drone.size) * getScale()) {
+            explosions.push(new Explosion(drone.x, drone.y));
+            lasersToRemove.push(i);
+            dronesToRemove.push(j);
+            score += 50;
+            break;
+          }
+        }
+      }
+
+      if (shockwave) {
+        for (let j = 0; j < drones.length; j++) {
+          const drone = drones[j];
+          const dx = shockwave.x - drone.x;
+          const dy = shockwave.y - drone.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          if (distance < shockwave.radius * getScale()) {
+            explosions.push(new Explosion(drone.x, drone.y));
+            dronesToRemove.push(j);
+            score += 50;
+          }
+        }
+      }
+
+      lasers = lasers.filter((_, index) => !lasersToRemove.includes(index));
+      drones = drones.filter((_, index) => !dronesToRemove.includes(index));
+    }
+
+    // Draw player
+    function drawPlayer() {
+      const scale = getScale();
+      ctx.fillStyle = isSlowMotion ? 'cyan' : (shockwave ? 'yellow' : 'white');
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.radius * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'gray';
+      ctx.beginPath();
+      const nozzleSize = player.radius * scale * 0.5;
+      if (player.direction === 'up') {
+        ctx.moveTo(player.x, player.y - player.radius * scale);
+        ctx.lineTo(player.x + nozzleSize, player.y - player.radius * scale - nozzleSize);
+        ctx.lineTo(player.x - nozzleSize, player.y - player.radius * scale - nozzleSize);
+      } else if (player.direction === 'down') {
+        ctx.moveTo(player.x, player.y + player.radius * scale);
+        ctx.lineTo(player.x + nozzleSize, player.y + player.radius * scale + nozzleSize);
+        ctx.lineTo(player.x - nozzleSize, player.y + player.radius * scale + nozzleSize);
+      } else if (player.direction === 'left') {
+        ctx.moveTo(player.x - player.radius * scale, player.y);
+        ctx.lineTo(player.x - player.radius * scale - nozzleSize, player.y + nozzleSize);
+        ctx.lineTo(player.x - player.radius * scale - nozzleSize, player.y - nozzleSize);
+      } else if (player.direction === 'right') {
+        ctx.moveTo(player.x + player.radius * scale, player.y);
+        ctx.lineTo(player.x + player.radius * scale + nozzleSize, player.y + nozzleSize);
+        ctx.lineTo(player.x + player.radius * scale + nozzleSize, player.y - nozzleSize);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Draw all game objects
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      drawPlayer();
+      for (let drone of drones) {
+        drone.draw();
+      }
+      for (let laser of lasers) {
+        laser.draw();
+      }
+      for (let explosion of explosions) {
+        explosion.draw();
+      }
+      if (shockwave) {
+        shockwave.draw();
+      }
+    }
+
+    // Game loop
+    function gameLoop(timestamp) {
+      if (gameState === 'start') {
+        return;
+      }
+
+      if (gameState === 'gameOver') {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+
+      if (gameState === 'waveTransition') {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawPlayer(); // Show player at center
+        return;
+      }
+
+      const deltaTime = (timestamp - lastTime) / 1000;
+      lastTime = timestamp;
+
+      // Wave transition logic
+      if (drones.length === 0 && waveTransitionTime === 0) {
+        waveTransitionTime = performance.now();
+        wave++;
+        waveDisplay.textContent = wave;
+        spawnWave();
+        return;
+      }
+
+      // Slow motion and shockwave logic
+      isSlowMotion = keys['Space'] && !shockwave;
+      const slowFactor = isSlowMotion ? 0.3 : 1;
+      if (isSlowMotion && timeMeter > 0) {
+        timeMeter -= 40 * deltaTime;
+      } else if (!isSlowMotion && !shockwave) {
+        timeMeter += 50 * deltaTime;
+      }
+      timeMeter = Math.max(0, timeMeter);
+      fireShockwave();
+
+      // Update player
+      const scale = getScale();
+      const playerSpeed = player.speed * scale;
+      if (keys['KeyW']) {
+        player.y -= playerSpeed * deltaTime;
+        player.direction = 'up';
+      }
+      if (keys['KeyS']) {
+        player.y += playerSpeed * deltaTime;
+        player.direction = 'down';
+      }
+      if (keys['KeyA']) {
+        player.x -= playerSpeed * deltaTime;
+        player.direction = 'left';
+      }
+      if (keys['KeyD']) {
+        player.x += playerSpeed * deltaTime;
+        player.direction = 'right';
+      }
+      player.x = Math.max(player.radius * scale, Math.min(canvas.width - player.radius * scale, player.x));
+      player.y = Math.max(player.radius * scale, Math.min(canvas.height - player.radius * scale, player.y));
+
+      // Fire laser
+      fireLaser();
+
+      // Update game objects
+      spawnDrone();
+      for (let drone of drones) {
+        drone.update(deltaTime, slowFactor);
+      }
+      for (let i = lasers.length - 1; i >= 0; i--) {
+        if (lasers[i].update(deltaTime)) {
+          lasers.splice(i, 1);
+        }
+      }
+      for (let i = explosions.length - 1; i >= 0; i--) {
+        if (explosions[i].update(deltaTime)) {
+          explosions.splice(i, 1);
+        }
+      }
+      if (shockwave) {
+        if (shockwave.update(deltaTime)) {
+          shockwave = null;
+        }
+      }
+
+      // Check collisions
+      checkCollisions();
+
+      // Update score
+      score += deltaTime * 10;
+      scoreDisplay.textContent = Math.floor(score);
+      timeMeterDisplay.textContent = Math.floor(timeMeter);
+
+      // Draw
+      draw();
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Input handling
+    let keys = {};
+    let mouse = { left: false, right: false };
+
+    document.addEventListener('DOMContentLoaded', () => {
+      canvas = document.getElementById('gameCanvas');
+      ctx = canvas.getContext('2d');
+      scoreDisplay = document.getElementById('score');
+      waveDisplay = document.getElementById('wave');
+      timeMeterDisplay = document.getElementById('timeMeter');
+      startScreen = document.getElementById('startScreen');
+      gameOverScreen = document.getElementById('gameOverScreen');
+      waveScreen = document.getElementById('waveScreen');
+      waveNumberDisplay = document.getElementById('waveNumber');
+      finalScoreDisplay = document.getElementById('finalScore');
+      finalWaveDisplay = document.getElementById('finalWave');
+      startButton = document.getElementById('startButton');
+      restartButton = document.getElementById('restartButton');
+
+      player = { x: canvas.width / 2, y: canvas.height / 2, radius: 10, speed: 200, direction: 'none' };
+
+      resizeCanvas();
+      window.addEventListener('resize', resizeCanvas);
+
+      document.addEventListener('keydown', (e) => { keys[e.code] = true; });
+      document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+      document.addEventListener('mousedown', (e) => {
+        if (gameState === 'playing') {
+          if (e.button === 0) mouse.left = true;
+          if (e.button === 2) mouse.right = true;
+        }
+      });
+      document.addEventListener('mouseup', (e) => {
+        if (e.button === 0) mouse.left = false;
+        if (e.button === 2) mouse.right = false;
+      });
+      document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+      startButton.addEventListener('click', () => {
+        console.log('Start button clicked via addEventListener');
+        startGame();
+      });
+      restartButton.addEventListener('click', () => {
+        console.log('Restart button clicked via addEventListener');
+        startGame();
+      });
+
+      requestAnimationFrame(gameLoop);
+    });
+  </script>
+</body>
+</html>
