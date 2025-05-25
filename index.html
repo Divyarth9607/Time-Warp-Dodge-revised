@@ -65,12 +65,13 @@
   <div id="ui">
     <p>Score: <span id="score">0</span></p>
     <p>Wave: <span id="wave">1</span></p>
+    <p>Time Left: <span id="waveTimer">30</span>s</p>
     <p>Time Meter: <span id="timeMeter">100</span></p>
     <p>WASD to move, Left-click to shoot (0.5s delay), Space to slow drones (invincible), Right-click for shockwave (costs 500)</p>
   </div>
   <div id="startScreen">
     <h1>Time Warp Dodge</h1>
-    <p>WASD: Move<br>Left-click: Shoot laser (0.5s delay)<br>Space: Slow-motion (invincible)<br>Right-click: Shockwave (costs 500 time meter)<br>Clear waves of drones to advance!</p>
+    <p>WASD: Move<br>Left-click: Shoot laser (0.5s delay)<br>Space: Slow-motion (invincible)<br>Right-click: Shockwave (costs 500 time meter)<br>Survive until the timer runs out to advance!</p>
     <button id="startButton">Start</button>
   </div>
   <div id="gameOverScreen" style="display: none;">
@@ -98,7 +99,8 @@
     let lastShot = 0;
     let lastSpawn = 0;
     let waveTransitionTime = 0;
-    let canvas, ctx, scoreDisplay, waveDisplay, timeMeterDisplay, startScreen, gameOverScreen, waveScreen, waveNumberDisplay, finalScoreDisplay, finalWaveDisplay, startButton, restartButton;
+    let waveStartTime = 0;
+    let canvas, ctx, scoreDisplay, waveDisplay, waveTimerDisplay, timeMeterDisplay, startScreen, gameOverScreen, waveScreen, waveNumberDisplay, finalScoreDisplay, finalWaveDisplay, startButton, restartButton;
 
     // Start/restart game
     function startGame() {
@@ -126,9 +128,11 @@
       lastSpawn = performance.now();
       lastTime = performance.now();
       waveTransitionTime = 0;
+      waveStartTime = 0;
       keys = {};
       mouse = { left: false, right: false };
       waveDisplay.textContent = wave;
+      waveTimerDisplay.textContent = 30;
     }
 
     // Set canvas to fullscreen
@@ -275,14 +279,21 @@
       gameState = 'waveTransition';
       setTimeout(() => {
         waveScreen.style.display = 'none';
-        gameState = 'playing';
-        console.log('Wave screen hidden, state changed to playing');
-        const droneCount = wave * 2;
-        for (let i = 0; i < droneCount; i++) {
-          drones.push(new Drone());
-        }
-        console.log('Spawned initial', droneCount, 'drones for wave', wave);
-        lastSpawn = performance.now();
+        gameState = 'prePlaying';
+        console.log('Wave screen hidden, state changed to prePlaying');
+        setTimeout(() => {
+          gameState = 'playing';
+          waveStartTime = performance.now();
+          const waveDuration = 30 + (wave - 1) * 5;
+          waveTimerDisplay.textContent = Math.ceil(waveDuration);
+          const droneCount = wave * 2;
+          for (let i = 0; i < droneCount; i++) {
+            drones.push(new Drone());
+          }
+          console.log('Spawned initial', droneCount, 'drones for wave', wave);
+          lastSpawn = performance.now();
+          waveTransitionTime = 0;
+        }, 1000);
         requestAnimationFrame(gameLoop);
       }, 1000);
     }
@@ -440,7 +451,7 @@
 
       if (gameState === 'waveTransition') {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        drawPlayer(); // Show player at center
+        drawPlayer();
         return;
       }
 
@@ -448,78 +459,89 @@
       lastTime = timestamp;
 
       // Wave transition logic
-      if (drones.length === 0 && waveTransitionTime === 0) {
-        waveTransitionTime = performance.now();
-        wave++;
-        waveDisplay.textContent = wave;
-        spawnWave();
-        return;
+      if (gameState === 'playing') {
+        const waveDuration = (30 + (wave - 1) * 5) * 1000; // Convert to ms
+        const elapsed = timestamp - waveStartTime;
+        if (elapsed >= waveDuration) {
+          drones = []; // Clear all drones
+          waveTransitionTime = performance.now();
+          wave++;
+          waveDisplay.textContent = wave;
+          spawnWave();
+          return;
+        }
+        // Update wave timer display
+        waveTimerDisplay.textContent = Math.ceil((waveDuration - elapsed) / 1000);
       }
 
-      // Slow motion and shockwave logic
-      isSlowMotion = keys['Space'] && !shockwave;
-      const slowFactor = isSlowMotion ? 0.3 : 1;
-      if (isSlowMotion && timeMeter > 0) {
-        timeMeter -= 40 * deltaTime;
-      } else if (!isSlowMotion && !shockwave) {
-        timeMeter += 50 * deltaTime;
-      }
-      timeMeter = Math.max(0, timeMeter);
-      fireShockwave();
-
-      // Update player
+      // Update player (allow movement in prePlaying and playing states)
       const scale = getScale();
       const playerSpeed = player.speed * scale;
-      if (keys['KeyW']) {
-        player.y -= playerSpeed * deltaTime;
-        player.direction = 'up';
-      }
-      if (keys['KeyS']) {
-        player.y += playerSpeed * deltaTime;
-        player.direction = 'down';
-      }
-      if (keys['KeyA']) {
-        player.x -= playerSpeed * deltaTime;
-        player.direction = 'left';
-      }
-      if (keys['KeyD']) {
-        player.x += playerSpeed * deltaTime;
-        player.direction = 'right';
-      }
-      player.x = Math.max(player.radius * scale, Math.min(canvas.width - player.radius * scale, player.x));
-      player.y = Math.max(player.radius * scale, Math.min(canvas.height - player.radius * scale, player.y));
-
-      // Fire laser
-      fireLaser();
-
-      // Update game objects
-      spawnDrone();
-      for (let drone of drones) {
-        drone.update(deltaTime, slowFactor);
-      }
-      for (let i = lasers.length - 1; i >= 0; i--) {
-        if (lasers[i].update(deltaTime)) {
-          lasers.splice(i, 1);
+      if (gameState === 'prePlaying' || gameState === 'playing') {
+        if (keys['KeyW']) {
+          player.y -= playerSpeed * deltaTime;
+          player.direction = 'up';
         }
-      }
-      for (let i = explosions.length - 1; i >= 0; i--) {
-        if (explosions[i].update(deltaTime)) {
-          explosions.splice(i, 1);
+        if (keys['KeyS']) {
+          player.y += playerSpeed * deltaTime;
+          player.direction = 'down';
         }
-      }
-      if (shockwave) {
-        if (shockwave.update(deltaTime)) {
-          shockwave = null;
+        if (keys['KeyA']) {
+          player.x -= playerSpeed * deltaTime;
+          player.direction = 'left';
         }
+        if (keys['KeyD']) {
+          player.x += playerSpeed * deltaTime;
+          player.direction = 'right';
+        }
+        player.x = Math.max(player.radius * scale, Math.min(canvas.width - player.radius * scale, player.x));
+        player.y = Math.max(player.radius * scale, Math.min(canvas.height - player.radius * scale, player.y));
       }
 
-      // Check collisions
-      checkCollisions();
+      if (gameState === 'playing') {
+        // Slow motion and shockwave logic
+        isSlowMotion = keys['Space'] && !shockwave;
+        const slowFactor = isSlowMotion ? 0.3 : 1;
+        if (isSlowMotion && timeMeter > 0) {
+          timeMeter -= 40 * deltaTime;
+        } else if (!isSlowMotion && !shockwave) {
+          timeMeter += 50 * deltaTime;
+        }
+        timeMeter = Math.max(0, timeMeter);
+        fireShockwave();
 
-      // Update score
-      score += deltaTime * 10;
-      scoreDisplay.textContent = Math.floor(score);
-      timeMeterDisplay.textContent = Math.floor(timeMeter);
+        // Fire laser
+        fireLaser();
+
+        // Update game objects
+        spawnDrone();
+        for (let drone of drones) {
+          drone.update(deltaTime, slowFactor);
+        }
+        for (let i = lasers.length - 1; i >= 0; i--) {
+          if (lasers[i].update(deltaTime)) {
+            lasers.splice(i, 1);
+          }
+        }
+        for (let i = explosions.length - 1; i >= 0; i--) {
+          if (explosions[i].update(deltaTime)) {
+            explosions.splice(i, 1);
+          }
+        }
+        if (shockwave) {
+          if (shockwave.update(deltaTime)) {
+            shockwave = null;
+          }
+        }
+
+        // Check collisions
+        checkCollisions();
+
+        // Update score
+        score += deltaTime * 10;
+        scoreDisplay.textContent = Math.floor(score);
+        timeMeterDisplay.textContent = Math.floor(timeMeter);
+      }
 
       // Draw
       draw();
@@ -536,6 +558,7 @@
       ctx = canvas.getContext('2d');
       scoreDisplay = document.getElementById('score');
       waveDisplay = document.getElementById('wave');
+      waveTimerDisplay = document.getElementById('waveTimer');
       timeMeterDisplay = document.getElementById('timeMeter');
       startScreen = document.getElementById('startScreen');
       gameOverScreen = document.getElementById('gameOverScreen');
